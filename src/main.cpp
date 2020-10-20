@@ -4,198 +4,275 @@
 #include <dht.h>
 #include <RH_NRF24.h>
 
-unsigned long StartTime, CurrentTime, ElapsedTime;
-
-dht DHT;
 #define DHT11_PIN 7
 #define ONE_WIRE_BUS 2
+#define VALVE_RELAY_PIN 6
+
+dht DHT;
 
 OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
-const int AirValue = 620;   //you need to replace this value with Value_1
-const int WaterValue = 310;  //you need to replace this value with Value_2
-int soilMoistureValue = 0;
-int soilmoisturepercent = 0;
+DallasTemperature dallasTemperature(&oneWire);
+const int AirValue = 620;
+const int WaterValue = 310;
 RH_NRF24 nrf24;
-int flag = false;
-bool opened = false;
-String data = "";
-int relayPin = 6;
-int cnt = 0;
 
-bool stringCompare(String a, uint8_t *b) {
-    for (int i = 0; i < a.length(); i++) {
-        if (a[i] != b[i]) {
-            return false;
+bool isValveOpened = false;
+
+#define PACKET_TYPE_SENSOR_DATA 1
+#define PACKET_TYPE_MESSAGE 2
+#define PACKET_TYPE_RESPONSE 3
+#define PACKET_TYPE_INSTRUCTION 4
+
+#define INSTRUCTION_SEND_SENSOR_DATA 1
+#define INSTRUCTION_OPEN_VALVE 2
+#define INSTRUCTION_CLOSE_VALVE 3
+
+#define RESPONSE_OPENED_VALVE 5
+#define RESPONSE_CLOSED_VALVE 6
+
+void reInitialiseNRF() {
+    if (!nrf24.init())
+        Serial.println("initialization failed");
+    if (!nrf24.setChannel(5))
+        Serial.println("Channel set failed");
+    if (!nrf24.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm))
+        Serial.println("RF set failed");
+    nrf24.setModeRx();
+}
+
+union DataPacket {
+    struct {
+        long packet_type;
+        union {
+            struct {
+                long moisture_percent;
+                float atmospheric_temperature;
+                float humidity;
+                float soil_temperature;
+
+                void print() const {
+                    Serial.print(F("Sensor Data | "));
+                    Serial.print(F("moisture : "));
+                    Serial.print(moisture_percent);
+                    Serial.print(F(" %\t atm_temp : "));
+                    Serial.print(atmospheric_temperature);
+                    Serial.print(F(" C\t humidity : "));
+                    Serial.print(humidity);
+                    Serial.print(F(" \t soil_temp : "));
+                    Serial.print(soil_temperature);
+                    Serial.println(F(" C"));
+                }
+            } sensor;
+
+            struct {
+                long code;
+                char text[RH_NRF24_MAX_MESSAGE_LEN - 8];
+
+                void print() {
+                    Serial.print(F("Response "));
+                    Serial.print(code);
+                    Serial.print(F(" | "));
+                    Serial.println(text);
+                }
+            } response;
+
+            struct {
+                long code;
+                char text[RH_NRF24_MAX_MESSAGE_LEN - 8];
+
+                void print() {
+                    Serial.print(F("Instruction "));
+                    Serial.print(code);
+                    Serial.print(F(" | "));
+                    Serial.println(text);
+                }
+            } instruction;
+
+            char message[RH_NRF24_MAX_MESSAGE_LEN - 4];
+        } data;
+
+        void print() {
+            switch (packet_type) {
+                case PACKET_TYPE_SENSOR_DATA:
+                    data.sensor.print();
+                    break;
+                case PACKET_TYPE_MESSAGE:
+                    Serial.print(F("Master >> "));
+                    Serial.println(data.message);
+                    break;
+                case PACKET_TYPE_RESPONSE:
+                    data.response.print();
+                    break;
+                case PACKET_TYPE_INSTRUCTION:
+                    data.instruction.print();
+                    break;
+            }
         }
+    } packet;
+
+    byte bytes[RH_NRF24_MAX_MESSAGE_LEN];
+};
+
+void readAndConsumeDataPacket();
+
+void sendData(uint8_t *bytes, byte length) {
+    Serial.println("Sending data...");
+    for (int i = 0; i < length; i++) {
+        Serial.print(bytes[i]);
+        Serial.print(" ");
     }
-    return true;
+    Serial.println();
+    nrf24.setModeTx();
+    nrf24.send(bytes, length);
+    if (!nrf24.waitPacketSent()) {
+        Serial.println(F("Transmission Failed!!"));
+        reInitialiseNRF();
+    }
+    nrf24.setModeRx();
 }
 
-void sendData(uint8_t data[]) {
-    nrf24.send(data, sizeof(data));
-    if (!nrf24.waitPacketSent()) {
-        Serial.println("Tramission Failed!!");
+void sendMessage(String text) {
+    Serial.println(text);
+
+    DataPacket packet{{PACKET_TYPE_MESSAGE}};
+    memcpy(packet.packet.data.message, text.begin(), text.length());
+
+    Serial.println("Sending message");
+    packet.packet.print();
+
+    sendData(packet.bytes, sizeof(packet.bytes));
+}
+
+void sendResponse(int responseCode, String text) {
+    Serial.println(text);
+
+    DataPacket packet{{PACKET_TYPE_RESPONSE}};
+    packet.packet.data.response.code = responseCode;
+    memcpy(packet.packet.data.response.text, text.begin(), text.length());
+
+    Serial.println("Sending response");
+    packet.packet.print();
+
+    sendData(packet.bytes, sizeof(packet.bytes));
+}
+
+byte readSoilMoisture() {
+    int soilMoistureValue = analogRead(A0);
+    int soilMoisturePercent = (int) map(soilMoistureValue, AirValue, WaterValue, 0, 100);
+    soilMoisturePercent = constrain(soilMoisturePercent, 0, 100);
+    Serial.println(soilMoistureValue);
+    Serial.println(soilMoisturePercent);
+    return (byte) soilMoisturePercent;
+}
+
+int updateDHT() {
+    int chk = DHT.read11(DHT11_PIN);
+    switch (chk) {
+        case DHTLIB_OK:
+            Serial.println(F("DHT read success"));
+            break;
+        case DHTLIB_ERROR_CHECKSUM:
+            Serial.println(F("DHT read error checksum"));
+            break;
+        case DHTLIB_ERROR_TIMEOUT:
+            Serial.println(F("DHT read error timeout"));
+            break;
+        default:
+            Serial.println(F("DHT read error"));
+    }
+//    return chk;
+    return DHTLIB_OK;
+}
+
+float readSoilTemperature() {
+    dallasTemperature.requestTemperatures();
+    return dallasTemperature.getTempCByIndex(0);
+}
+
+void sendSensorData() {
+    DataPacket packet{{PACKET_TYPE_SENSOR_DATA, {{readSoilMoisture(),
+                                                         (float) DHT.temperature, (float) DHT.humidity, readSoilTemperature()}}}};
+    Serial.println("Sending sensor data...");
+    packet.packet.print();
+    sendData(packet.bytes, sizeof(packet.bytes));
+}
+
+
+void openValve() {
+    if (isValveOpened) return;
+    else {
+        isValveOpened = true;
+        digitalWrite(VALVE_RELAY_PIN, HIGH);
     }
 }
 
-
-void sendSensorData(byte moisture, float dht_temp, float humidity, float soil_temp) {
-    uint8_t arr[14];
-    arr[0] = moisture;
-    byte *b = (byte *) &dht_temp;
-    arr[1] = b[0];
-    arr[2] = b[1];
-    arr[3] = b[2];
-    arr[4] = b[3];
-    byte *c = (byte *) &humidity;
-    arr[5] = c[0];
-    arr[6] = c[1];
-    arr[7] = c[2];
-    arr[8] = c[3];
-    byte *d = (byte *) &soil_temp;
-    arr[9] = d[0];
-    arr[10] = d[1];
-    arr[11] = d[2];
-    arr[12] = d[3];
-    arr[13] = 0;
-    sendData(arr);
+void closeValve() {
+    if (!isValveOpened) return;
+    else {
+        isValveOpened = false;
+        digitalWrite(VALVE_RELAY_PIN, LOW);
+    }
 }
 
-void sendData(String data) {
-    Serial.println(data);
-    flag = true;
-    StartTime = millis();
-    uint8_t dataArray[data.length()];
-    data.getBytes(dataArray, data.length());
-    nrf24.send(dataArray, sizeof(dataArray));
-    if (!nrf24.waitPacketSent()) {
-        Serial.println("Tramission Failed!!");
+void readAndConsumeDataPacket() {
+    DataPacket dataPacket{};
+    uint8_t len = sizeof(dataPacket.bytes);
+    if (nrf24.recv(dataPacket.bytes, &len)) {
+        dataPacket.packet.print();
+        for (int i = 0; i < len; i++) {
+            Serial.print(dataPacket.bytes[i]);
+            Serial.print(" ");
+        }
+        Serial.println();
+        switch (dataPacket.packet.packet_type) {
+            case PACKET_TYPE_INSTRUCTION:
+                switch (dataPacket.packet.data.instruction.code) {
+                    case INSTRUCTION_SEND_SENSOR_DATA: {
+                        Serial.println(dataPacket.packet.data.instruction.text);
+                        switch (updateDHT()) {
+                            case DHTLIB_OK:
+                                sendSensorData();
+                                break;
+                        }
+                        break;
+                    }
+                    case INSTRUCTION_OPEN_VALVE: {
+                        openValve();
+                        sendResponse(RESPONSE_OPENED_VALVE, F("Valve Opened"));
+                        break;
+                    }
+                    case INSTRUCTION_CLOSE_VALVE: {
+                        closeValve();
+                        sendResponse(RESPONSE_CLOSED_VALVE, F("Valve Closed"));
+                        break;
+                    }
+                    default:
+                        Serial.println(F("Unknown Instruction Received"));
+                }
+        }
+    } else {
+        Serial.println(F("Receive failed"));
     }
 }
 
 void setup() {
     Serial.begin(9600);
-    sensors.begin();
+    dallasTemperature.begin();
     while (!Serial);
-    if (!nrf24.init())
-        Serial.println("initialization failed");
-    if (!nrf24.setChannel(5))
-        Serial.println("Channel Set failed");
-    if (!nrf24.setRF(RH_NRF24::DataRate2Mbps, RH_NRF24::TransmitPower0dBm))
-        Serial.println("RF set failed");
+    reInitialiseNRF();
     delay(1000);
 }
 
-byte moisture_percent() {
-    soilMoistureValue = analogRead(A0);  //put Sensor insert into soil
-    soilmoisturepercent = map(soilMoistureValue, AirValue, WaterValue, 0, 100);
-    soilmoisturepercent = constrain(soilmoisturepercent, 0, 100);
-    Serial.println(soilMoistureValue);
-    Serial.println(soilmoisturepercent);
-    return (byte) soilmoisturepercent;
-}
-
-String atmospheric_temp_n_humid() {
-    int chk = DHT.read11(DHT11_PIN);
-    return String(DHT.temperature) + String(" ") + String(DHT.humidity) + String(" ");
-}
-
-float soil_temp() {
-    sensors.requestTemperatures();
-    return sensors.getTempCByIndex(0);
-    /*//print the temperature in Celsius
-      Serial.print("Temperature: ");
-      Serial.print(sensors.getTempCByIndex(0));
-      Serial.println("°C");//shows degrees character*/
-}
-
-void OpenValve() {
-    if (opened)
-        return;
-    else {
-        opened = true;
-        digitalWrite(relayPin, HIGH);
-    }
-}
-
-void CloseValve() {
-    if (!opened)
-        return;
-    else {
-        opened = false;
-        digitalWrite(relayPin, LOW);
-    }
-}
+//unsigned long count = 0;
 
 void loop() {
-    Serial.println("loop");
-    Serial.println(flag);
-    if (flag == false && nrf24.available()) {
-        data = "Data ";
-        uint8_t buf[RH_NRF24_MAX_MESSAGE_LEN];
-        uint8_t len = sizeof(buf);
-        if (nrf24.recv(buf, &len)) {
-            Serial.println((char *) buf);
-            String str1 = "Attempt to connect";
-            String str2 = "Open Valve";
-            String str3 = "Close Valve";
-            bool attempt, openvalve, closevalve;
-            int i = 0;
-
-            attempt = stringCompare(str1, buf);
-            openvalve = stringCompare(str2, buf);
-            closevalve = stringCompare(str3, buf);
-
-            if (attempt) {
-                Serial.print("Received: ");
-                Serial.println((char *) buf);
-                int chk = DHT.read11(DHT11_PIN);
-                sendSensorData(moisture_percent(), DHT.humidity, DHT.temperature, soil_temp());
-            } else if (openvalve) {
-                OpenValve();
-                data = String("Valve Opened ");
-                sendData(data);
-            } else if (closevalve) {
-                CloseValve();
-                data = String("Valve Closed ");
-                sendData(data);
-            } else {
-                Serial.println("Entire data is not received");
-            }
-        } else {
-            Serial.println("recv failed");
-        }
-    }
-    Serial.println(flag);
-    if (flag) {
-        cnt = 0;
-        Serial.println(data);
-        uint8_t dataArray[data.length()];
-        data.getBytes(dataArray, data.length());
-        nrf24.send(dataArray, sizeof(dataArray));
-        if (!nrf24.waitPacketSent()) {
-            Serial.println("Tramission Failed!!");
-        }
+    if (nrf24.available()) {
+        readAndConsumeDataPacket();
     }
 
-
-    CurrentTime = millis();
-    ElapsedTime = CurrentTime - StartTime;
-    Serial.println(ElapsedTime);
-
-    if (ElapsedTime > 5000) {
-        if (!nrf24.init())
-            Serial.println("initialization failed");
-        if (!nrf24.setChannel(5))
-            Serial.println("Channel Set failed");
-        if (!nrf24.setRF(RH_NRF24::DataRate2Mbps, RH_NRF24::TransmitPower0dBm))
-            Serial.println("RF set failed");
-        cnt = 0;
-
-        flag = false;
-        StartTime = millis();
-    }
-
-
+//    if(count == 500000){
+//        sendMessage("Hi");
+//        count = 0;
+//    }
+//    count++;
 }
