@@ -30,12 +30,14 @@ bool isValveOpened = false;
 #define RESPONSE_OPENED_VALVE 5
 #define RESPONSE_CLOSED_VALVE 6
 
+unsigned long counter = 0;
+
 void reInitialiseNRF() {
     if (!nrf24.init())
         Serial.println("initialization failed");
     if (!nrf24.setChannel(5))
         Serial.println("Channel set failed");
-    if (!nrf24.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm))
+    if (!nrf24.setRF(RH_NRF24::DataRate2Mbps, RH_NRF24::TransmitPowerm18dBm))
         Serial.println("RF set failed");
     nrf24.setModeRx();
 }
@@ -43,6 +45,7 @@ void reInitialiseNRF() {
 union DataPacket {
     struct {
         long packet_type;
+        unsigned long id;
         union {
             struct {
                 long moisture_percent;
@@ -66,7 +69,7 @@ union DataPacket {
 
             struct {
                 long code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 8];
+                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
                     Serial.print(F("Response "));
@@ -78,7 +81,7 @@ union DataPacket {
 
             struct {
                 long code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 8];
+                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
                     Serial.print(F("Instruction "));
@@ -88,10 +91,13 @@ union DataPacket {
                 }
             } instruction;
 
-            char message[RH_NRF24_MAX_MESSAGE_LEN - 4];
+            char message[RH_NRF24_MAX_MESSAGE_LEN - 8];
         } data;
 
         void print() {
+            Serial.print("#");
+            Serial.print(id);
+            Serial.print(": ");
             switch (packet_type) {
                 case PACKET_TYPE_SENSOR_DATA:
                     data.sensor.print();
@@ -131,10 +137,16 @@ void sendData(uint8_t *bytes, byte length) {
     nrf24.setModeRx();
 }
 
+DataPacket createDataPacket(int type) {
+    DataPacket packet{{type}};
+    packet.packet.id = counter++;
+    return packet;
+}
+
 void sendMessage(String text) {
     Serial.println(text);
 
-    DataPacket packet{{PACKET_TYPE_MESSAGE}};
+    DataPacket packet = createDataPacket(PACKET_TYPE_MESSAGE);
     memcpy(packet.packet.data.message, text.begin(), text.length());
 
     Serial.println("Sending message");
@@ -146,7 +158,7 @@ void sendMessage(String text) {
 void sendResponse(int responseCode, String text) {
     Serial.println(text);
 
-    DataPacket packet{{PACKET_TYPE_RESPONSE}};
+    DataPacket packet = createDataPacket(PACKET_TYPE_RESPONSE);
     packet.packet.data.response.code = responseCode;
     memcpy(packet.packet.data.response.text, text.begin(), text.length());
 
@@ -190,8 +202,11 @@ float readSoilTemperature() {
 }
 
 void sendSensorData() {
-    DataPacket packet{{PACKET_TYPE_SENSOR_DATA, {{readSoilMoisture(),
-                                                         (float) DHT.temperature, (float) DHT.humidity, readSoilTemperature()}}}};
+    DataPacket packet = createDataPacket(PACKET_TYPE_SENSOR_DATA);
+    packet.packet.data.sensor.moisture_percent = readSoilMoisture();
+    packet.packet.data.sensor.atmospheric_temperature = (float) DHT.temperature;
+    packet.packet.data.sensor.humidity = (float) DHT.humidity;
+    packet.packet.data.sensor.soil_temperature = readSoilTemperature();
     Serial.println("Sending sensor data...");
     packet.packet.print();
     sendData(packet.bytes, sizeof(packet.bytes));
@@ -266,7 +281,7 @@ void setup() {
 //unsigned long count = 0;
 
 void loop() {
-    if (nrf24.available()) {
+    while (nrf24.available()) {
         readAndConsumeDataPacket();
     }
 
