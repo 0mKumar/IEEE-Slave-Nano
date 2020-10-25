@@ -128,7 +128,6 @@ void sendData(uint8_t *bytes, byte length) {
         Serial.print(" ");
     }
     Serial.println();
-    nrf24.setModeTx();
     nrf24.send(bytes, length);
     if (!nrf24.waitPacketSent()) {
         Serial.println(F("Transmission Failed!!"));
