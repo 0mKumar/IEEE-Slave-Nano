@@ -5,7 +5,7 @@
 #include <RH_NRF24.h>
 #include <RHReliableDatagram.h>
 
-#define THIS_ADDRESS 1
+#define THIS_ADDRESS 2
 #define MASTER_ADDRESS 128
 
 #define DHT11_PIN 7
@@ -42,14 +42,18 @@ unsigned long counter = 0;
 void reInitialiseNRF() {
     if (!manager.init())
         Serial.println("init failed");
-    manager.setRetries(10);
-    manager.setTimeout(300);
+    driver.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm);
+    driver.setChannel(96);
+    manager.setRetries(20);
+    manager.setTimeout(200);
 }
+
+#define DATA_PACKET_MAX_LENGTH 20
 
 union DataPacket {
     struct {
         long packet_type;
-        unsigned long id;
+//        unsigned long id;
         union {
             struct {
                 long moisture_percent;
@@ -73,41 +77,59 @@ union DataPacket {
 
             struct {
                 long code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
                     Serial.print(F("Response "));
                     Serial.print(code);
                     Serial.print(F(" | "));
-                    Serial.println(text);
+                    switch (code) {
+                        case RESPONSE_CLOSED_VALVE:
+                            Serial.println(F("RESPONSE_CLOSED_VALVE"));
+                            break;
+                        case RESPONSE_OPENED_VALVE:
+                            Serial.println(F("RESPONSE_OPENED_VALVE"));
+                            break;
+                    }
                 }
             } response;
 
             struct {
                 long code;
-                char text[RH_NRF24_MAX_MESSAGE_LEN - 12];
 
                 void print() {
-                    Serial.print(F("Instruction "));
+                    Serial.print(F("Instruction Received"));
                     Serial.print(code);
                     Serial.print(F(" | "));
-                    Serial.println(text);
+                    switch (code) {
+                        case INSTRUCTION_OPEN_VALVE:
+                            Serial.println(F("INSTRUCTION_OPEN_VALVE"));
+                            break;
+                        case INSTRUCTION_CLOSE_VALVE:
+                            Serial.println(F("INSTRUCTION_CLOSE_VALVE"));
+                            break;
+                        case INSTRUCTION_SEND_SENSOR_DATA:
+                            Serial.println(F("INSTRUCTION_SEND_SENSOR_DATA"));
+                            break;
+                        case INSTRUCTION_PREPARE_SENSOR_DATA:
+                            Serial.println(F("INSTRUCTION_PREPARE_SENSOR_DATA"));
+                            break;
+                    }
                 }
             } instruction;
 
-            char message[RH_NRF24_MAX_MESSAGE_LEN - 8];
+            char message[DATA_PACKET_MAX_LENGTH - 4];
         } data;
 
         void print() {
-            Serial.print("#");
-            Serial.print(id);
-            Serial.print(": ");
+//            Serial.print("#");
+//            Serial.print(id);
+//            Serial.print(": ");
             switch (packet_type) {
                 case PACKET_TYPE_SENSOR_DATA:
                     data.sensor.print();
                     break;
                 case PACKET_TYPE_MESSAGE:
-                    Serial.print(F("Master >> "));
+                    Serial.print(F("Message >> "));
                     Serial.println(data.message);
                     break;
                 case PACKET_TYPE_RESPONSE:
@@ -122,7 +144,7 @@ union DataPacket {
         }
     } packet;
 
-    byte bytes[RH_NRF24_MAX_MESSAGE_LEN];
+    byte bytes[DATA_PACKET_MAX_LENGTH];
 };
 
 void readAndConsumeDataPacket();
@@ -130,44 +152,45 @@ void readAndConsumeDataPacket();
 void sendData(uint8_t *bytes, byte length, uint8_t to) {
     Serial.println("Sending data...");
     for (int i = 0; i < length; i++) {
-        Serial.print(bytes[i]);
+        Serial.print(bytes[i], HEX);
         Serial.print(" ");
     }
     Serial.println();
     if (!manager.sendtoWait(bytes, length, to)) {
         Serial.println(F("Transmission Failed!!"));
+        reInitialiseNRF();
     }
 }
 
 DataPacket createDataPacket(int type) {
     DataPacket packet{{type}};
-    packet.packet.id = counter++;
+//    packet.packet.id = counter++;
     return packet;
 }
 
-void sendMessage(String text, uint8_t to) {
-    Serial.println(text);
-
-    DataPacket packet = createDataPacket(PACKET_TYPE_MESSAGE);
-    memcpy(packet.packet.data.message, text.begin(), text.length());
-
-    Serial.println("Sending message");
-    packet.packet.print();
-
-    sendData(packet.bytes, sizeof(packet.bytes), to);
-}
+//void sendMessage(String text, uint8_t to) {
+//    Serial.println(text);
+//
+//    DataPacket packet = createDataPacket(PACKET_TYPE_MESSAGE);
+//    memcpy(packet.packet.data.message, text.begin(), text.length());
+//
+//    Serial.println("Sending message");
+//    packet.packet.print();
+//
+//    sendData(packet.bytes, sizeof(packet.bytes), to);
+//}
 
 void sendResponse(int responseCode, String text, uint8_t to) {
     Serial.println(text);
 
-    DataPacket packet = createDataPacket(PACKET_TYPE_RESPONSE);
-    packet.packet.data.response.code = responseCode;
-    memcpy(packet.packet.data.response.text, text.begin(), text.length());
+    DataPacket responsePacket = createDataPacket(PACKET_TYPE_RESPONSE);
+    responsePacket.packet.data.response.code = responseCode;
+//    memcpy(responsePacket.packet.data.response.text, text.begin(), text.length());
 
-    Serial.println("Sending response");
-    packet.packet.print();
+    Serial.println("Sending response...");
+    responsePacket.packet.print();
 
-    sendData(packet.bytes, sizeof(packet.bytes), to);
+    sendData(responsePacket.bytes, 4 * 1 + 4, to);
 }
 
 byte readSoilMoisture() {
@@ -205,8 +228,18 @@ float readSoilTemperature() {
 
 DataPacket sensorPacket = DataPacket{{PACKET_TYPE_SENSOR_DATA}};
 
-void prepareSensorData(){
-    sensorPacket.packet.id = counter++;
+void fakePacket() {
+    sensorPacket.packet.data.sensor.moisture_percent = 26;
+    sensorPacket.packet.data.sensor.atmospheric_temperature = (float) 27.8;
+    sensorPacket.packet.data.sensor.humidity = (float) 44.56;
+    sensorPacket.packet.data.sensor.soil_temperature = 32.92;
+}
+
+void prepareSensorData() {
+//    sensorPacket.packet.id = counter++;
+
+//    fakePacket();
+//    return;
     updateDHT();
     sensorPacket.packet.data.sensor.moisture_percent = readSoilMoisture();
     sensorPacket.packet.data.sensor.atmospheric_temperature = (float) DHT.temperature;
@@ -218,7 +251,7 @@ void prepareSensorData(){
 void sendSensorData(uint8_t to) {
     Serial.println("Sending sensor data...");
     sensorPacket.packet.print();
-    sendData(sensorPacket.bytes, sizeof(sensorPacket.bytes), to);
+    sendData(sensorPacket.bytes, 4 * 4 + 4, to);
 }
 
 
@@ -226,7 +259,7 @@ void openValve() {
     if (isValveOpened) return;
     else {
         isValveOpened = true;
-        digitalWrite(VALVE_RELAY_PIN, HIGH);
+        digitalWrite(VALVE_RELAY_PIN, LOW);
     }
 }
 
@@ -234,15 +267,13 @@ void closeValve() {
     if (!isValveOpened) return;
     else {
         isValveOpened = false;
-        digitalWrite(VALVE_RELAY_PIN, LOW);
+        digitalWrite(VALVE_RELAY_PIN, HIGH);
     }
 }
 
 void sendReceived(uint8_t to){
     DataPacket receivedSuccess = createDataPacket(PACKET_TYPE_RECEIVE_SUCCESS);
-    if (!manager.sendtoWait(receivedSuccess.bytes, 4, to)){
-        Serial.println("sendtoWait failed");
-    }
+    sendData(receivedSuccess.bytes, 4, to);
 }
 
 void readAndConsumeDataPacket() {
@@ -256,7 +287,7 @@ void readAndConsumeDataPacket() {
         dataPacket.packet.print();
 
         for (int i = 0; i < len; i++) {
-            Serial.print(dataPacket.bytes[i]);
+            Serial.print(dataPacket.bytes[i], HEX);
             Serial.print(" ");
         }
         Serial.println();
@@ -269,7 +300,6 @@ void readAndConsumeDataPacket() {
                         break;
                     }
                     case INSTRUCTION_SEND_SENSOR_DATA: {
-                        Serial.println(dataPacket.packet.data.instruction.text);
                         sendSensorData(from);
                         break;
                     }
@@ -293,21 +323,29 @@ void readAndConsumeDataPacket() {
         }
     } else {
         Serial.println(F("Receive failed"));
+        reInitialiseNRF();
     }
 }
 
+unsigned long lastTime = 0;
+
 void setup() {
+    digitalWrite(VALVE_RELAY_PIN, HIGH);
+    pinMode(VALVE_RELAY_PIN, OUTPUT);
     Serial.begin(9600);
     dallasTemperature.begin();
     while (!Serial);
     reInitialiseNRF();
     delay(1000);
+    lastTime = millis();
 }
-
-//unsigned long count = 0;
 
 void loop() {
     if (manager.available()) {
         readAndConsumeDataPacket();
+    }
+    if (millis() - lastTime > 5000) {
+        lastTime = millis();
+        reInitialiseNRF();
     }
 }
