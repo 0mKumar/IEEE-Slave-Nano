@@ -1,12 +1,19 @@
 #include <Arduino.h>
+#include "AwesomeHC12.h"
+
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <dht.h>
-#include <RH_NRF24.h>
-#include <RHReliableDatagram.h>
 
 #define THIS_ADDRESS 2
 #define MASTER_ADDRESS 128
+
+
+#define HC_TX_PIN 4
+#define HC_RX_PIN 5
+#define HC_SET_PIN 3
+
+AwesomeHC12 HC12(HC_TX_PIN, HC_RX_PIN, HC_SET_PIN, THIS_ADDRESS, 9600, 1, 96);
 
 #define DHT11_PIN 7
 #define ONE_WIRE_BUS 2
@@ -18,8 +25,6 @@ OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature dallasTemperature(&oneWire);
 const int AirValue = 620;
 const int WaterValue = 310;
-RH_NRF24 driver;
-RHReliableDatagram manager(driver, THIS_ADDRESS);
 
 bool isValveOpened = false;
 
@@ -38,15 +43,6 @@ bool isValveOpened = false;
 #define RESPONSE_CLOSED_VALVE 6
 
 unsigned long counter = 0;
-
-void reInitialiseNRF() {
-    if (!manager.init())
-        Serial.println("init failed");
-    driver.setRF(RH_NRF24::DataRate250kbps, RH_NRF24::TransmitPower0dBm);
-    driver.setChannel(96);
-    manager.setRetries(20);
-    manager.setTimeout(200);
-}
 
 #define DATA_PACKET_MAX_LENGTH 20
 
@@ -156,10 +152,7 @@ void sendData(uint8_t *bytes, byte length, uint8_t to) {
         Serial.print(" ");
     }
     Serial.println();
-    if (!manager.sendtoWait(bytes, length, to)) {
-        Serial.println(F("Transmission Failed!!"));
-        reInitialiseNRF();
-    }
+    HC12.send(bytes, length, to);
 }
 
 DataPacket createDataPacket(int type) {
@@ -278,9 +271,15 @@ void sendReceived(uint8_t to){
 
 void readAndConsumeDataPacket() {
     DataPacket dataPacket{};
-    uint8_t len = sizeof(dataPacket.bytes);
+    size_t len;
     uint8_t from;
-    if (manager.recvfromAck(dataPacket.bytes, &len, &from)) {
+
+    unsigned long time = millis();
+    while (millis() - time < 400 && !HC12.available());
+
+    if (HC12.available()) {
+        HC12.read(dataPacket.bytes, len, from);
+
         Serial.print("got request from : 0x");
         Serial.print(from, HEX);
         Serial.print(": ");
@@ -323,11 +322,8 @@ void readAndConsumeDataPacket() {
         }
     } else {
         Serial.println(F("Receive failed"));
-        reInitialiseNRF();
     }
 }
-
-unsigned long lastTime = 0;
 
 void setup() {
     digitalWrite(VALVE_RELAY_PIN, HIGH);
@@ -335,17 +331,11 @@ void setup() {
     Serial.begin(9600);
     dallasTemperature.begin();
     while (!Serial);
-    reInitialiseNRF();
-    delay(1000);
-    lastTime = millis();
+    HC12.init();
 }
 
 void loop() {
-    if (manager.available()) {
+    if (HC12.available()) {
         readAndConsumeDataPacket();
-    }
-    if (millis() - lastTime > 5000) {
-        lastTime = millis();
-        reInitialiseNRF();
     }
 }
