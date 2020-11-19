@@ -44,7 +44,7 @@ bool isValveOpened = false;
 
 unsigned long counter = 0;
 
-#define DATA_PACKET_MAX_LENGTH 20
+#define DATA_PACKET_MAX_LENGTH 32
 
 union DataPacket {
     struct {
@@ -93,7 +93,7 @@ union DataPacket {
                 long code;
 
                 void print() {
-                    Serial.print(F("Instruction Received"));
+                    Serial.print(F("Instruction Received "));
                     Serial.print(code);
                     Serial.print(F(" | "));
                     switch (code) {
@@ -143,7 +143,7 @@ union DataPacket {
     byte bytes[DATA_PACKET_MAX_LENGTH];
 };
 
-void readAndConsumeDataPacket();
+bool readAndConsumeDataPacket();
 
 void sendData(uint8_t *bytes, byte length, uint8_t to) {
     Serial.println("Sending data...");
@@ -244,7 +244,7 @@ void prepareSensorData() {
 void sendSensorData(uint8_t to) {
     Serial.println("Sending sensor data...");
     sensorPacket.packet.print();
-    sendData(sensorPacket.bytes, 4 * 4 + 4, to);
+    sendData(sensorPacket.bytes, 4 * 4 + 4 + 2, to);
 }
 
 
@@ -269,16 +269,18 @@ void sendReceived(uint8_t to){
     sendData(receivedSuccess.bytes, 4, to);
 }
 
-void readAndConsumeDataPacket() {
+bool readAndConsumeDataPacket() {
     DataPacket dataPacket{};
     size_t len;
     uint8_t from;
 
     unsigned long time = millis();
-    while (millis() - time < 400 && !HC12.available());
+    while (millis() - time < 4000 && !HC12.available());
 
     if (HC12.available()) {
-        HC12.read(dataPacket.bytes, len, from);
+        if (!HC12.read(dataPacket.bytes, len, from)) {
+            return false;
+        }
 
         Serial.print("got request from : 0x");
         Serial.print(from, HEX);
@@ -320,8 +322,10 @@ void readAndConsumeDataPacket() {
             default:
                 sendReceived(from);
         }
+        return true;
     } else {
         Serial.println(F("Receive failed"));
+        return false;
     }
 }
 
