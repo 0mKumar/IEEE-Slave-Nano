@@ -5,7 +5,7 @@
 #include <DallasTemperature.h>
 #include <dht.h>
 
-#define THIS_ADDRESS 2
+#define THIS_ADDRESS 1
 #define MASTER_ADDRESS 128
 
 
@@ -23,8 +23,8 @@ dht DHT;
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature dallasTemperature(&oneWire);
-const int AirValue = 620;
-const int WaterValue = 310;
+const int AirValue = 725;
+const int WaterValue = 0;
 
 bool isValveOpened = false;
 
@@ -188,8 +188,8 @@ void sendResponse(int responseCode, String text, uint8_t to) {
 
 byte readSoilMoisture() {
     int soilMoistureValue = analogRead(A0);
-    int soilMoisturePercent = (int) map(soilMoistureValue, AirValue, WaterValue, 0, 100);
-    soilMoisturePercent = constrain(soilMoisturePercent, 0, 100);
+    float soilMoisturePercent = (float) map(soilMoistureValue, AirValue, WaterValue, 0, 1000) / 10.0f;
+    soilMoisturePercent = constrain(soilMoisturePercent, 0.0f, 100.0f);
     Serial.println(soilMoistureValue);
     Serial.println(soilMoisturePercent);
     return (byte) soilMoisturePercent;
@@ -338,8 +338,14 @@ void setup() {
     HC12.init();
 }
 
+unsigned long t1 = 0;
+
 void loop() {
     if (HC12.available()) {
         readAndConsumeDataPacket();
+    }
+    if (millis() - t1 > 500) {
+        t1 = millis();
+        readSoilMoisture();
     }
 }
