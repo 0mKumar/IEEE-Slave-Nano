@@ -5,7 +5,7 @@
 #include <DallasTemperature.h>
 #include <dht.h>
 
-#define THIS_ADDRESS 1
+#define THIS_ADDRESS 3
 #define MASTER_ADDRESS 128
 
 

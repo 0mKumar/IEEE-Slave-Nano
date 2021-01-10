@@ -5,6 +5,8 @@
 #ifndef AWESOME_HC12_H
 #define AWESOME_HC12_H
 
+static const int hcDelay = 200;
+
 #include "Arduino.h"
 #include "SoftwareSerial.h"
 

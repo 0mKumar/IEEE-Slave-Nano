@@ -53,10 +53,10 @@ void AwesomeHC12::init() {
     digitalWrite(setPin, LOW);
     delay(50);
     HC12.write(charBuffer);
-    delay(100);
+    delay(hcDelay);
 
     HC12.end();
-    delay(100);
+    delay(hcDelay);
     HC12.begin((long) baudRate);
 
     while (HC12.available()) {
@@ -65,13 +65,13 @@ void AwesomeHC12::init() {
     Serial.println();
     sprintf(charBuffer, "AT+C%03d", channel);
     HC12.write(charBuffer);
-    delay(100);
+    delay(hcDelay);
     while (HC12.available()) {
         Serial.write((char) HC12.read());
     }
     Serial.println();
     digitalWrite(setPin, HIGH);
-    delay(100);
+    delay(hcDelay);
     isStarted = true;
 }
 
@@ -104,7 +104,7 @@ bool AwesomeHC12::sendATCommand(const char *cmd) {
     digitalWrite(setPin, LOW);
     delay(50);
     HC12.write(cmd);
-    delay(100);
+    delay(hcDelay);
     bool overflow = true;
     if (HC12.available() <= 20) {
         HC12.readBytes(cmdResponse, HC12.available());
@@ -112,6 +112,6 @@ bool AwesomeHC12::sendATCommand(const char *cmd) {
     }
     clearReadBuffer();
     digitalWrite(setPin, HIGH);
-    delay(100);
+    delay(hcDelay);
     return overflow;
 }
